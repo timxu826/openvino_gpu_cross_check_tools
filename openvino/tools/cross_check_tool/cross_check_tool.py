@@ -203,7 +203,7 @@ def print_value(out_array, ref_array):
 
 def one_ir_mode(args):
     core = get_plugin(args.device, args.l, args.config)
-    # core.set_property("GPU", {hints.inference_precision: ov.runtime.Type.f32})
+    core.set_property("GPU", {hints.inference_precision: ov.runtime.Type.f32})
     model = get_model(model_path=args.model, core=core)
     model_ops, model_inputs, model_outputs = get_model_info(model)
     log.info(f'{args.device} vs {args.reference_device}')
@@ -242,7 +242,7 @@ def one_ir_mode(args):
                 tensor_counters(out_tensor, ref_out_tensor)
                 global_accuracy = update_global_accuracy_matrics(global_accuracy=global_accuracy, current_accuracy=a_m)
                 print_value(out_tensor, ref_out_tensor)
-                # return
+                return
             except Exception as e:
                 log.error(f"layer No. {cnt} = {op.friendly_name} throw an except {e}")
     print_all_over_the_net_metrics(global_times=global_times, ref_global_times=ref_global_times,
@@ -250,13 +250,14 @@ def one_ir_mode(args):
 
 def one_ir_two_batch_mode(args):
     core = get_plugin(args.device, args.l, args.config)
+    core.set_property("GPU", {hints.inference_precision: ov.runtime.Type.f32})
     model = get_model(model_path=args.model, core=core)
     model_ops, model_inputs, model_outputs = get_model_info(model)
     inputs = input_processing(model_path=args.model, model_inputs=model_inputs, input_file=args.input, batch_size=args.batch)
     reshape(model, inputs)
     log.info(f'{args.device} vs {args.reference_device}')
     log.info(f'The same IR on both devices: {args.model}')
-    out_ops = get_ops_list(model_ops, model_outputs, args.layers)
+    out_ops = get_ops_list(model_ops, model_outputs, args.layers, args.op_list)
     print_inputs(model_inputs)
     print_output_ops(out_ops)
     ref_core = get_plugin(args.reference_device, args.l, args.reference_config)
@@ -268,40 +269,45 @@ def one_ir_two_batch_mode(args):
                                                             ref_device=args.reference_device, layers=args.layers,
                                                             num_of_iterations=args.num_of_iterations)
     cnt = 0
-    for op in out_ops:
+    for op in reversed(out_ops):
         log.info(f'Layer {cnt} =  {op.friendly_name} statistics')
-        # if(cnt < 2000):
-        if(op.friendly_name!="Transpose_2915385"):
-            cnt+=1
-            continue
+        # if(op.friendly_name!="Transpose_2915385"):
+        # if(cnt < 105):
+        #     cnt+=1
+        #     continue
         cnt+=1
         for i in range(op.get_output_size()):
             if op.get_output_size() > 1:
                 log.info(f'Port {i}: ')
-            model_copy, new_output = get_model_copy_with_output_multibatch(model=args.model, output=(op.friendly_name, i), core=core, inputs=inputs)
-            if(new_output.partial_shape.is_static):
-                if(new_output.shape.to_string() == "[]" or new_output.shape[0] != 2):
-                    log.info(f'Layer {op.friendly_name} is not applicable by shape {new_output.shape}.')
+            try:
+                model_copy, new_output = get_model_copy_with_output_multibatch(model=args.model, output=(op.friendly_name, i), core=core, inputs=inputs)
+                if(new_output.partial_shape.is_static):
+                    if(new_output.shape.to_string() == "[]" or new_output.shape[0] != 2):
+                        log.info(f'Layer {op.friendly_name} is not applicable by shape {new_output.shape}.')
+                        continue
+                # reshape(model_copy, inputs)
+                out_tensor, pc, helper = infer(model=model_copy, core=core, device=args.device, inputs=inputs, output=new_output)
+                # ref_out_tensor, ref_pc = infer(model=model_copy, core=ref_core, device=args.reference_device, inputs=inputs, output=new_output)
+                log.info(f'Layer {op.friendly_name} is now running with shape {out_tensor.shape}.')
+                
+                if(out_tensor.shape[0] != 2):
+                    log.info(f'Layer {op.friendly_name} is not applicable by dynamic shape {out_tensor.shape}.')
                     continue
-            # reshape(model_copy, inputs)
-            out_tensor, pc = infer(model=model_copy, core=core, device=args.device, inputs=inputs, output=new_output)
-            # ref_out_tensor, ref_pc = infer(model=model_copy, core=ref_core, device=args.reference_device, inputs=inputs, output=new_output)
-            log.info(f'Layer {op.friendly_name} is now running with shape {out_tensor.shape}.')
-            
-            if(out_tensor.shape[0] != 2):
-                log.info(f'Layer {op.friendly_name} is not applicable by dynamic shape {out_tensor.shape}.')
-                continue
-            if(len(out_tensor) == 2):
-                ref_out_tensor = out_tensor[1]
-                out_tensor = out_tensor[0]
-            else:
-                ref_out_tensor = out_tensor[1,:]
-                out_tensor = out_tensor[0,:]
-            ref_pc = pc
-            a_m = accuracy_metrics(out_tensor, ref_out_tensor)
-            performance_metrics(args.device, pc, args.reference_device, ref_pc)
-            tensor_counters(out_tensor, ref_out_tensor)
-            global_accuracy = update_global_accuracy_matrics(global_accuracy=global_accuracy, current_accuracy=a_m)
+                if(len(out_tensor) == 2):
+                    ref_out_tensor = out_tensor[1]
+                    out_tensor = out_tensor[0]
+                else:
+                    ref_out_tensor = out_tensor[1,:]
+                    out_tensor = out_tensor[0,:]
+                ref_pc = pc
+                a_m = accuracy_metrics(out_tensor, ref_out_tensor)
+                performance_metrics(args.device, pc, args.reference_device, ref_pc)
+                tensor_counters(out_tensor, ref_out_tensor)
+                print_value(out_tensor, ref_out_tensor)
+                global_accuracy = update_global_accuracy_matrics(global_accuracy=global_accuracy, current_accuracy=a_m)
+                return
+            except Exception as e:
+                log.error(f"layer No. {cnt} = {op.friendly_name} throw an except {e}")
     print_all_over_the_net_metrics(global_times=global_times, ref_global_times=ref_global_times,
                                    global_accuracy=global_accuracy)
 
